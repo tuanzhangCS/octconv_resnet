@@ -1,19 +1,8 @@
 from __future__ import print_function
-import keras
-from keras.layers import Dense, Conv2D, BatchNormalization, Activation
-from keras.layers import AveragePooling2D, Input, Flatten
-from keras.layers import UpSampling2D, Add
-from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint, LearningRateScheduler
-from keras.callbacks import ReduceLROnPlateau
-from keras.preprocessing.image import ImageDataGenerator
-from keras.regularizers import l2
-from keras import backend as K
-from keras.models import Model
-from keras.datasets import cifar10
-import numpy as np
-import os
-
+import tensorflow.keras as keras
+from tensorflow.keras.layers import Dense, Conv2D, BatchNormalization, Activation
+from tensorflow.keras.layers import AveragePooling2D, Input, Flatten
+from tensorflow.keras.layers import UpSampling2D, Add, Lambda
 
 def oct_resnet_layer(inputs,
                      num_filters=16,
@@ -44,19 +33,21 @@ def oct_resnet_layer(inputs,
     """
     if (not isinstance(inputs, list)):
         inputs = [inputs]
-    # one input and one output, don't split in Channel
-    if (len(inputs) == 1 and oct_last):
+
+    #alpha_in = alpha
+    #alpha_out = alpha
+    if oct_last:
         alpha = 0
 
     if (not oct_last):
-        convh_l = Conv2D(num_filters * alpha,
+        convh_l = Conv2D(int(num_filters * alpha),
                          kernel_size=kernel_size,
                          strides=strides,
                          padding='same',
                          kernel_initializer='he_normal',
                          kernel_regularizer=l2(1e-4))
 
-    convh_h = Conv2D(num_filters * (1-alpha),
+    convh_h = Conv2D(int(num_filters * (1-alpha)),
                      kernel_size=kernel_size,
                      strides=strides,
                      padding='same',
@@ -66,14 +57,14 @@ def oct_resnet_layer(inputs,
 
     if (len(inputs) == 2):
         if (not oct_last):
-            convl_l = Conv2D(num_filters * alpha,
+            convl_l = Conv2D(int(num_filters * alpha),
                              kernel_size=kernel_size,
                              strides=strides,
                              padding='same',
                              kernel_initializer='he_normal',
                              kernel_regularizer=l2(1e-4))
 
-        convl_h = Conv2D(num_filters * (1-alpha),
+        convl_h = Conv2D(int(num_filters * (1-alpha)),
                          kernel_size=kernel_size,
                          strides=strides,
                          padding='same',
@@ -132,7 +123,7 @@ def oct_resnet_layer(inputs,
                 out_l = convh_l(out_l)
 
     if (oct_last):
-        return [out_h]
+        return out_h
     else:
         return [out_h, out_l]
 
@@ -176,12 +167,12 @@ def resnet_v1(input_shape, depth, num_classes=10):
     # Instantiate the stack of residual units
     oct_last = False
     for stack in range(3):
+        if stack == 2:
+            oct_last = True
         for res_block in range(num_res_blocks):
             strides = 1
             if stack > 0 and res_block == 0:  # first layer but not first stack
                 strides = 2  # downsample
-            if stack == 2 and res_block == (num_res_blocks - 1):
-                oct_last = True
             y = oct_resnet_layer(inputs=x,
                              num_filters=num_filters,
                              strides=strides,
@@ -198,18 +189,21 @@ def resnet_v1(input_shape, depth, num_classes=10):
                                  kernel_size=1,
                                  strides=strides,
                                  activation=None,
-                                 batch_normalization=False)
-            if stack == 2 and res_block == (num_res_blocks - 1):
-                x = keras.layers.add([x, y])
+                                 batch_normalization=False,
+                                 oct_last=oct_last)
+            if oct_last:
+                x = Add()([x, y])
                 x = Activation('relu')(x)
             else:
                 xh, xl = x
-                xh = keras.layers.add([xh, yh])
-                xl = keras.layers.add([xl, yl])
+                yh, yl = y
+                xh = Add()([xh, yh])
+                xl = Add()([xl, yl])
                 xh = Activation('relu')(xh)
                 xl = Activation('relu')(xl)
                 x = [xh, xl]
         num_filters *= 2
+
 
     # Add classifier on top.
     # v1 does not use BN after last shortcut connection-ReLU
