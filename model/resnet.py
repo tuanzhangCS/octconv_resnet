@@ -3,6 +3,8 @@ import tensorflow.keras as keras
 from tensorflow.keras.layers import Dense, Conv2D, BatchNormalization, Activation
 from tensorflow.keras.layers import AveragePooling2D, Input, Flatten
 from tensorflow.keras.layers import UpSampling2D, Add, Lambda
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.models import Model
 
 def oct_resnet_layer(inputs,
                      num_filters=16,
@@ -34,8 +36,6 @@ def oct_resnet_layer(inputs,
     if (not isinstance(inputs, list)):
         inputs = [inputs]
 
-    #alpha_in = alpha
-    #alpha_out = alpha
     if oct_last:
         alpha = 0
 
