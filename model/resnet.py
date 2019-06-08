@@ -6,6 +6,63 @@ from tensorflow.keras.layers import UpSampling2D, Add, Lambda
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.models import Model
 
+def oct_conv(inputs,
+             num_filters,
+             kernel_size,
+             strides,
+             alpha=0.5,
+             padding='same',
+             kernel_initializer='he_normal',
+             kernel_regularizer=l2(1e-4)):
+    ''' oct-conv
+    # Arguments
+        inputs: tensor or list of tensor, the number of input tensor
+                is one or two. if one, it's input_h, if two, it's [input_h, input_l]
+        alpha: num_filters * alpha is the number of out_l's filters,
+               num_filters * (1-alpha) is the number of out_h's filters
+    # return
+       out_h or [out_h, out_l]: it returns out_h when alpha is 0, else [out_h, out_l]
+    '''
+
+    if not isinstance(inputs, list):
+        inputs = [inputs]
+
+    if alpha > 0:
+        if alpha == 1:
+            print("don't support alpha >= 1!")
+            exit(-1)
+        num_filters = [int(num_filters * (1-alpha)), int(num_filters * alpha)]
+    else:
+        num_filters = [int(num_filters)]
+
+    outputs = []
+    for i, nfilter in enumerate(num_filters):
+        out_ = []
+        for j, x in enumerate(inputs):
+            if i == 0 and j == 1:
+                x = UpSampling2D(size=(2, 2), interpolation='nearest')(x)
+            elif i == 1 and j == 0:
+                x = AveragePooling2D(pool_size=2)(x)
+            conv = Conv2D(int(nfilter),
+                          kernel_size=kernel_size,
+                          strides=strides,
+                          padding='same',
+                          kernel_initializer='he_normal',
+                          kernel_regularizer=l2(1e-4))
+            x = conv(x)
+            out_.append(x)
+        if len(out_) == 2:
+            y = Add()(out_)
+        else:
+            y = out_[0]
+        outputs.append(y)
+
+    if len(outputs) == 2:
+        return outputs
+    else: # just have one output
+        return outputs[0]
+
+
 def oct_resnet_layer(inputs,
                      num_filters=16,
                      kernel_size=3,
@@ -13,8 +70,7 @@ def oct_resnet_layer(inputs,
                      alpha=0.5,
                      activation='relu',
                      batch_normalization=True,
-                     conv_first=True,
-                     oct_last=False):
+                     conv_first=True):
     """2D Convolution-Batch Normalization-Activation stack builder
 
     # Arguments
@@ -24,6 +80,8 @@ def oct_resnet_layer(inputs,
         num_filters (int): Conv2D number of filters
         kernel_size (int): Conv2D square kernel dimensions
         strides (int): Conv2D square stride dimensions
+        alpha (float): The ratio of low-frequence output feature
+            note if alpha=0, output is only one tensor
         activation (string): activation name
         batch_normalization (bool): whether to include batch normalization
         conv_first (bool): conv-bn-activation (True) or
@@ -33,99 +91,47 @@ def oct_resnet_layer(inputs,
         x (list of tensor): tensor as input to the next layer
             if oct_last is False, x contain out_h and out_l
     """
-    if (not isinstance(inputs, list)):
-        inputs = [inputs]
-
-    if oct_last:
-        alpha = 0
-
-    if (not oct_last):
-        convh_l = Conv2D(int(num_filters * alpha),
-                         kernel_size=kernel_size,
-                         strides=strides,
-                         padding='same',
-                         kernel_initializer='he_normal',
-                         kernel_regularizer=l2(1e-4))
-
-    convh_h = Conv2D(int(num_filters * (1-alpha)),
-                     kernel_size=kernel_size,
-                     strides=strides,
-                     padding='same',
-                     kernel_initializer='he_normal',
-                     kernel_regularizer=l2(1e-4))
-    in_h = inputs[0]
-
-    if (len(inputs) == 2):
-        if (not oct_last):
-            convl_l = Conv2D(int(num_filters * alpha),
+    if conv_first:
+        if alpha > 0:
+            out_h, out_l = oct_conv(inputs,
+                                    num_filters=num_filters,
+                                    kernel_size=kernel_size,
+                                    strides=strides,
+                                    alpha=alpha)
+            if batch_normalization:
+                out_h = BatchNormalization()(out_h)
+                out_l = BatchNormalization()(out_l)
+            if activation is not None:
+                out_h = Activation(activation)(out_h)
+                out_l = Activation(activation)(out_l)
+            return [out_h, out_l]
+        else:
+            out_h = oct_conv(inputs,
+                             num_filters=num_filters,
                              kernel_size=kernel_size,
                              strides=strides,
-                             padding='same',
-                             kernel_initializer='he_normal',
-                             kernel_regularizer=l2(1e-4))
-
-        convl_h = Conv2D(int(num_filters * (1-alpha)),
-                         kernel_size=kernel_size,
-                         strides=strides,
-                         padding='same',
-                         kernel_initializer='he_normal',
-                         kernel_regularizer=l2(1e-4))
-        in_l = inputs[1]
-
-    if conv_first:
-        if (len(inputs) == 2):
-            h0 = convh_h(in_h)
-            h1 = UpSampling2D(size=(2, 2), data_format=None, interpolation='nearest')(in_l)
-            h1 = convl_h(h1)
-            out_h = Add()([h0, h1])
-            if (not oct_last):
-                l0 = convl_l(in_l)
-                l1 = AveragePooling2D(pool_size=2)(in_h)
-                l1 = convh_l(l1)
-                out_l = Add()([l0, l1])
-        else:
-            out_h = convh_h(in_h)
-            if (not oct_last):
-                out_l = AveragePooling2D(pool_size=2)(in_h)
-                out_l = convh_l(out_l)
-
-        if batch_normalization:
-            out_h = BatchNormalization()(out_h)
-            if (not oct_last):
-                out_l = BatchNormalization()(out_l)
-        if activation is not None:
-            out_h = Activation(activation)(out_h)
-            if (not oct_last):
-                out_l = Activation(activation)(out_l)
+                             alpha=alpha)
+            if batch_normalization:
+                out_h = BatchNormalization()(out_h)
+            if activation is not None:
+                out_h = Activation(activation)(out_h)
+            return out_h
     else:
-        if batch_normalization:
-            in_h = BatchNormalization()(in_h)
-            if (not oct_last):
-                in_l = BatchNormalization()(in_l)
-        if activation is not None:
-            in_h = Activation(activation)(in_h)
-            if (not oct_last):
-                in_l = Activation(activation)(in_l)
-        if (len(inputs) == 2):
-            h0 = convh_h(in_h)
-            h1 = UpSampling2D(size=(2, 2), data_format=None, interpolation='nearest')(in_l)
-            h1 = convl_h(h1)
-            out_h = Add()([h0, h1])
-            if (not oct_last):
-                l0 = convl_l(in_l)
-                l1 = AveragePooling2D(pool_size=2)(in_h)
-                l1 = convh_l(l1)
-                out_l = Add()([l0, l1])
-        else:
-            out_h = convh_h(in_h)
-            if (not oct_last):
-                out_l = AveragePooling2D(pool_size=2)(in_h)
-                out_l = convh_l(out_l)
+        inputs_ = []
+        inputs = inputs if isinstance(inputs, list) or isinstance(inputs, tuple) else [inputs]
+        for x in inputs:
+            if batch_normalization:
+                x = BatchNormalization()(x)
+            if activation is not None:
+                x = Activation(activation)(x)
+            inputs_.append(x)
 
-    if (oct_last):
-        return out_h
-    else:
-        return [out_h, out_l]
+        output = oct_conv(inputs_,
+                          num_filters=num_filters,
+                          kernel_size=kernel_size,
+                          strides=strides,
+                          alpha=alpha)
+        return output
 
 
 def resnet_v1(input_shape, depth, num_classes=10):
@@ -165,10 +171,10 @@ def resnet_v1(input_shape, depth, num_classes=10):
     inputs = Input(shape=input_shape)
     x = oct_resnet_layer(inputs=inputs) # x is list of tensor, and len(x) == 2
     # Instantiate the stack of residual units
-    oct_last = False
+    alpha = 0.5
     for stack in range(3):
         if stack == 2:
-            oct_last = True
+            alpha = 0
         for res_block in range(num_res_blocks):
             strides = 1
             if stack > 0 and res_block == 0:  # first layer but not first stack
@@ -176,11 +182,11 @@ def resnet_v1(input_shape, depth, num_classes=10):
             y = oct_resnet_layer(inputs=x,
                              num_filters=num_filters,
                              strides=strides,
-                             oct_last=oct_last)
+                             alpha=alpha)
             y = oct_resnet_layer(inputs=y,
                              num_filters=num_filters,
                              activation=None,
-                             oct_last=oct_last)
+                             alpha=alpha)
             if stack > 0 and res_block == 0:  # first layer but not first stack
                 # linear projection residual shortcut connection to match
                 # changed dims, because the size of feature map has been changed
@@ -190,8 +196,8 @@ def resnet_v1(input_shape, depth, num_classes=10):
                                  strides=strides,
                                  activation=None,
                                  batch_normalization=False,
-                                 oct_last=oct_last)
-            if oct_last:
+                                 alpha=alpha)
+            if alpha == 0:
                 x = Add()([x, y])
                 x = Activation('relu')(x)
             else:
@@ -256,7 +262,7 @@ def resnet_v2(input_shape, depth, num_classes=10):
                      conv_first=True)
 
     # Instantiate the stack of residual units
-    oct_last = False
+    alpha = 0.5
     for stage in range(3):
         for res_block in range(num_res_blocks):
             activation = 'relu'
@@ -272,7 +278,7 @@ def resnet_v2(input_shape, depth, num_classes=10):
                 if res_block == 0:  # first layer but not first stage
                     strides = 2    # downsample
                 if stage == 2: # and res_block == (num_res_blocks - 1):
-                    oct_last = True
+                    alpha = 0
 
             # bottleneck residual unit
             y = oct_resnet_layer(inputs=x,
@@ -282,16 +288,16 @@ def resnet_v2(input_shape, depth, num_classes=10):
                              activation=activation,
                              batch_normalization=batch_normalization,
                              conv_first=False,
-                             oct_last=oct_last)
+                             alpha=alpha)
             y = oct_resnet_layer(inputs=y,
                              num_filters=num_filters_in,
                              conv_first=False,
-                             oct_last=oct_last)
+                             alpha=alpha)
             y = oct_resnet_layer(inputs=y,
                              num_filters=num_filters_out,
                              kernel_size=1,
                              conv_first=False,
-                             oct_last=oct_last)
+                             alpha=alpha)
             if res_block == 0:
                 # linear projection residual shortcut connection to match
                 # changed dims
@@ -301,8 +307,8 @@ def resnet_v2(input_shape, depth, num_classes=10):
                                  strides=strides,
                                  activation=None,
                                  batch_normalization=False,
-                                 oct_last=oct_last)
-            if oct_last:
+                                 alpha=alpha)
+            if alpha == 0:
                 x = keras.layers.add([x, y])
             else:
                 xh = keras.layers.add([x[0], y[0]])

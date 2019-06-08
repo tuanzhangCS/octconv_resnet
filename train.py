@@ -92,6 +92,10 @@ if __name__ == "__main__":
     else:
         model = resnet_v1(input_shape=input_shape, depth=depth)
 
+    # from tensorflow.keras.utils import plot_model
+    # plot_model(model, to_file=model_type+'.pdf')
+    # print("write model graph done!")
+    # exit()
     model.compile(loss='categorical_crossentropy',
                   optimizer=Adam(lr=lr_schedule(0)),
                   metrics=['accuracy'])
